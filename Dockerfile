@@ -17,13 +17,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Install uv for fast dependency management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
 # Install Python dependencies
 # essentia-tensorflow only publishes dev builds for Python 3.10+,
 # which are not matched by the >=2.1b6 specifier in requirements.txt,
 # so we install it explicitly first then the remaining deps.
-RUN pip install --no-cache-dir essentia-tensorflow
+RUN uv pip install --system --no-cache essentia-tensorflow
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN uv pip install --system --no-cache -r requirements.txt
 
 # Download ML models at build time
 COPY download_models.sh .
