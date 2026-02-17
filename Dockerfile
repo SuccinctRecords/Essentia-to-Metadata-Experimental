@@ -39,5 +39,5 @@ COPY tag_music.py .
 # Music directory mount point
 VOLUME ["/music"]
 
-ENTRYPOINT ["python", "tag_music.py"]
-CMD ["/music", "--auto", "--model-dir", "/app/essentia_models"]
+ENTRYPOINT ["python", "tag_music.py", "--model-dir", "/app/essentia_models"]
+CMD ["/music", "--auto"]
