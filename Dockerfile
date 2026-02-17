@@ -19,7 +19,7 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --pre -r requirements.txt
 
 # Download ML models at build time
 COPY download_models.sh .
