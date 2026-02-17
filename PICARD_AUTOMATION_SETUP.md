@@ -67,38 +67,35 @@ You need to copy three files to your OMV7 server:
 - `essentia_watcher.sh` - The file watcher script
 - `essentia-tagger.service` - The systemd service file
 
-**Option A: Using SCP from your local machine:**
+**Option A: Clone the repo and copy locally (Recommended):**
 
 ```bash
-# From your local Windows machine (adjust paths as needed)
-scp tag_music.py root@YOUR_OMV_IP:/opt/essentia-tagger/
-scp essentia_watcher.sh root@YOUR_OMV_IP:/opt/essentia-tagger/
-scp essentia-tagger.service root@YOUR_OMV_IP:/etc/systemd/system/
+# Clone the repository to your server
+cd /srv/dev-disk-by-uuid-dc4918d5-6597-465b-9567-ce442fbd8e2a/Github
+git clone https://github.com/WB2024/Essentia-to-Metadata.git
+
+# Copy scripts to the installation directory
+cp /srv/dev-disk-by-uuid-dc4918d5-6597-465b-9567-ce442fbd8e2a/Github/Essentia-to-Metadata/tag_music.py /opt/essentia-tagger/
+cp /srv/dev-disk-by-uuid-dc4918d5-6597-465b-9567-ce442fbd8e2a/Github/Essentia-to-Metadata/essentia_watcher.sh /opt/essentia-tagger/
+cp /srv/dev-disk-by-uuid-dc4918d5-6597-465b-9567-ce442fbd8e2a/Github/Essentia-to-Metadata/essentia-tagger.service /etc/systemd/system/
 ```
 
-**Option B: Using wget if hosted on GitHub:**
+**Option B: Using wget from GitHub:**
 
 ```bash
-# If you push to GitHub, you can wget the raw files
 cd /opt/essentia-tagger
-wget https://raw.githubusercontent.com/YOUR_USER/Essentia-to-Metadata/main/tag_music.py
-wget https://raw.githubusercontent.com/YOUR_USER/Essentia-to-Metadata/main/essentia_watcher.sh
-wget https://raw.githubusercontent.com/YOUR_USER/Essentia-to-Metadata/main/essentia-tagger.service -O /etc/systemd/system/essentia-tagger.service
+wget https://raw.githubusercontent.com/WB2024/Essentia-to-Metadata/main/tag_music.py
+wget https://raw.githubusercontent.com/WB2024/Essentia-to-Metadata/main/essentia_watcher.sh
+wget https://raw.githubusercontent.com/WB2024/Essentia-to-Metadata/main/essentia-tagger.service -O /etc/systemd/system/essentia-tagger.service
 ```
 
-**Option C: Create files directly on the server:**
-
-```bash
-# SSH into server, then use nano/vim to create files
-cd /opt/essentia-tagger
-nano tag_music.py  # paste content
-nano essentia_watcher.sh  # paste content
-```
-
-Make the watcher script executable:
+Make the watcher script executable and fix line endings (important if cloned on Windows):
 
 ```bash
 chmod +x /opt/essentia-tagger/essentia_watcher.sh
+
+# Fix Windows line endings (CRLF -> LF) - required if files were edited on Windows
+sed -i 's/\r$//' /opt/essentia-tagger/essentia_watcher.sh
 ```
 
 ### Step 4: Create Python Virtual Environment
@@ -141,13 +138,13 @@ cd /opt/essentia-tagger/models
 # Download the embedding model
 wget https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb
 
-# Download genre model and metadata
-wget https://essentia.upf.edu/models/music-style-classification/discogs400/genre_discogs400-discogs-effnet-1.pb
-wget https://essentia.upf.edu/models/music-style-classification/discogs400/genre_discogs400-discogs-effnet-1.json
+# Download genre model and metadata (note: uses classification-heads path)
+wget https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb
+wget https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json
 
-# Download mood model and metadata
-wget https://essentia.upf.edu/models/music-style-classification/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.pb
-wget https://essentia.upf.edu/models/music-style-classification/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json
+# Download mood model and metadata (note: uses classification-heads path)
+wget https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.pb
+wget https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json
 
 # Verify all files exist
 ls -la
@@ -197,8 +194,12 @@ Environment="DEBOUNCE_SECONDS=5"    # Wait time before processing
 Before enabling the service, test everything manually:
 
 ```bash
-# Test 1: Check dependencies
-/opt/essentia-tagger/essentia_watcher.sh --check
+# Test 1: Check dependencies (use -c flag)
+/opt/essentia-tagger/essentia_watcher.sh -c
+
+# Expected output:
+# [2026-02-17 17:52:26] Checking dependencies...
+# [2026-02-17 17:52:26] All dependencies OK
 
 # Test 2: Process a single test file manually
 source /opt/essentia-tagger/venv/bin/activate
@@ -209,9 +210,17 @@ python /opt/essentia-tagger/tag_music.py "/path/to/test/song.flac" \
     --dry-run
 deactivate
 
+# Expected output:
+# 🎸 Genres: Rock---Punk (74.9%), Rock---Oi (34.4%), Rock---Power Pop (26.4%)
+# 🎸 Formatted: Rock - Punk, Rock - Oi, Rock - Power Pop
+# 😊 Moods: energetic (16.3%), melodic (16.0%), love (9.1%)
+# [DRY RUN] Would write: Genres: Rock - Punk, Rock - Oi, Rock - Power Pop | Moods: Energetic, Melodic, Love
+
 # Test 3: Run the watcher in test mode (processes up to 5 existing files)
-/opt/essentia-tagger/essentia_watcher.sh --test
+/opt/essentia-tagger/essentia_watcher.sh -t
 ```
+
+> **Note:** The TensorFlow CUDA warnings are normal if you don't have a GPU - the tagger will use CPU.
 
 ### Step 8: Enable and Start the Service
 
@@ -293,6 +302,14 @@ Other Options:
 
 ## Troubleshooting
 
+### Script Shows "Unknown option" Errors
+
+If you see errors like `ERROR: Unknown option: --check` when running the watcher script, this is caused by Windows line endings (CRLF) in the shell script. Fix with:
+
+```bash
+sed -i 's/\r$//' /opt/essentia-tagger/essentia_watcher.sh
+```
+
 ### Service Won't Start
 
 ```bash
@@ -312,8 +329,11 @@ ls -la /opt/essentia-tagger/models/
 chown -R root:root /opt/essentia-tagger
 chmod +x /opt/essentia-tagger/essentia_watcher.sh
 
-# 3. Test manually
-/opt/essentia-tagger/essentia_watcher.sh --check
+# 3. Fix line endings (if edited on Windows)
+sed -i 's/\r$//' /opt/essentia-tagger/essentia_watcher.sh
+
+# 4. Test manually
+/opt/essentia-tagger/essentia_watcher.sh -c
 ```
 
 ### Files Not Being Detected
@@ -388,6 +408,39 @@ journalctl -u essentia-tagger -f
 
 # Disable auto-start
 systemctl disable essentia-tagger
+```
+
+## Changing Settings On-the-Fly
+
+To adjust tagging settings, edit the service file and restart:
+
+```bash
+nano /etc/systemd/system/essentia-tagger.service
+```
+
+**Editable settings:**
+```ini
+Environment="GENRES=3"              # Number of genres (1-10)
+Environment="GENRE_THRESHOLD=15"    # Genre confidence % (5-35 recommended)
+Environment="MOOD_THRESHOLD=0.5"    # Mood confidence % (0.1-5 recommended)
+Environment="GENRE_FORMAT=parent_child"  # parent_child, child_parent, child_only, raw
+Environment="DRY_RUN=false"         # true = test mode, no tags written
+Environment="OVERWRITE=true"        # true = replace existing genre tags
+Environment="DEBOUNCE_SECONDS=5"    # Seconds to wait before processing
+```
+
+**After editing, reload and restart:**
+```bash
+systemctl daemon-reload
+systemctl restart essentia-tagger
+```
+
+**Quick one-liner to change settings:**
+```bash
+# Example: Change to 4 genres with 20% threshold
+sed -i 's/GENRES=3/GENRES=4/' /etc/systemd/system/essentia-tagger.service
+sed -i 's/GENRE_THRESHOLD=15/GENRE_THRESHOLD=20/' /etc/systemd/system/essentia-tagger.service
+systemctl daemon-reload && systemctl restart essentia-tagger
 ```
 
 ## View Logs

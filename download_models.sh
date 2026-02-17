@@ -19,8 +19,7 @@ cd "${MODEL_DIR}"
 
 # Download embedding model (required)
 echo "📦 Downloading embedding model..."
-wget -q --show-progress https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.pb
-wget -q --show-progress https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.json
+wget -q --show-progress https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb
 
 # Download genre classifier
 echo "📦 Downloading genre classifier (Discogs 400)..."
