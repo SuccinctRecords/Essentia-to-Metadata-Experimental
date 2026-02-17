@@ -1,0 +1,23 @@
+services:
+  essentia-tagger:
+    build: .
+    volumes:
+      - ${MUSIC_DIR:-./music}:/music
+    # Override CMD via environment or command
+    # Examples:
+    #   docker compose run essentia-tagger /music --auto --dry-run
+    #   docker compose run essentia-tagger /music/song.flac --auto --single-file
+    profiles: ["cpu"]
+
+  essentia-tagger-gpu:
+    build: .
+    volumes:
+      - ${MUSIC_DIR:-./music}:/music
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles: ["gpu"]
