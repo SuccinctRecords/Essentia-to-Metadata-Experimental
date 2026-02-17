@@ -187,6 +187,7 @@ Environment="GENRE_FORMAT=parent_child"  # Format style
 Environment="DRY_RUN=false"         # Set to 'true' to test without writing
 Environment="OVERWRITE=true"        # Overwrite existing genre tags
 Environment="DEBOUNCE_SECONDS=5"    # Wait time before processing
+Environment="COOLDOWN_SECONDS=120"  # Skip files processed within this time
 ```
 
 ### Step 7: Test the Setup
@@ -301,6 +302,26 @@ Other Options:
 ```
 
 ## Troubleshooting
+
+### Tagger Keeps Re-Processing Files in a Loop
+
+If you see the tagger processing the same files repeatedly, this is because writing tags back to the file triggers another `close_write` event. The watcher script has a built-in cooldown mechanism to prevent this.
+
+**Solution:** The script tracks recently processed files and skips them for 120 seconds (configurable). If you're seeing a loop, make sure you're using the latest version of `essentia_watcher.sh`.
+
+```bash
+# Copy the updated watcher script
+cp /path/to/essentia-tagger/essentia_watcher.sh /opt/essentia-tagger/
+sed -i 's/\r$//' /opt/essentia-tagger/essentia_watcher.sh
+systemctl restart essentia-tagger
+
+# If you want to force reprocessing files, clear the cache:
+/opt/essentia-tagger/essentia_watcher.sh --reset-cache
+
+# Adjust cooldown period (default 120 seconds)
+# In /etc/systemd/system/essentia-tagger.service:
+Environment="COOLDOWN_SECONDS=180"
+```
 
 ### Script Shows "Unknown option" Errors
 

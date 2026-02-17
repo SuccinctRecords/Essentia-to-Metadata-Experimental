@@ -61,9 +61,16 @@ OVERWRITE="${OVERWRITE:-true}"
 # Audio file extensions to watch
 AUDIO_EXTENSIONS="flac|mp3|ogg|m4a|wav"
 
+# Cooldown period in seconds (skip files processed within this time)
+# Prevents feedback loop when tagger writes metadata back to the file
+COOLDOWN_SECONDS="${COOLDOWN_SECONDS:-120}"
+
 # =============================================================================
 # DO NOT EDIT BELOW THIS LINE (unless you know what you're doing)
 # =============================================================================
+
+# Cache file for tracking recently processed files
+PROCESSED_CACHE="/tmp/essentia-processed-cache"
 
 # Colors for output
 RED='\033[0;31m'
@@ -149,6 +156,40 @@ build_tagger_args() {
     echo "$args"
 }
 
+# Check if file was recently processed (prevents feedback loop)
+is_recently_processed() {
+    local filepath="$1"
+    local current_time=$(date +%s)
+    
+    # Create cache file if it doesn't exist
+    touch "$PROCESSED_CACHE" 2>/dev/null || true
+    
+    # Clean old entries from cache (older than cooldown period)
+    local temp_cache=$(mktemp)
+    while IFS='|' read -r timestamp file; do
+        if [ -n "$timestamp" ] && [ -n "$file" ]; then
+            local age=$((current_time - timestamp))
+            if [ $age -lt $COOLDOWN_SECONDS ]; then
+                echo "${timestamp}|${file}" >> "$temp_cache"
+            fi
+        fi
+    done < "$PROCESSED_CACHE"
+    mv "$temp_cache" "$PROCESSED_CACHE" 2>/dev/null || true
+    
+    # Check if file is in cache
+    if grep -qF "|${filepath}" "$PROCESSED_CACHE" 2>/dev/null; then
+        return 0  # File was recently processed
+    fi
+    return 1  # File not in cache
+}
+
+# Mark file as processed
+mark_as_processed() {
+    local filepath="$1"
+    local current_time=$(date +%s)
+    echo "${current_time}|${filepath}" >> "$PROCESSED_CACHE"
+}
+
 # Process a single file
 process_file() {
     local filepath="$1"
@@ -168,6 +209,12 @@ process_file() {
         return 0
     fi
     
+    # Check if file was recently processed (prevents feedback loop)
+    if is_recently_processed "$filepath"; then
+        log_info "Skipping (recently processed): $(basename "$filepath")"
+        return 0
+    fi
+    
     log "Processing: $filepath"
     
     # Build arguments
@@ -182,6 +229,8 @@ process_file() {
     local status=$?
     if [ $status -eq 0 ]; then
         log "Successfully tagged: $(basename "$filepath")"
+        # Mark as processed to prevent feedback loop
+        mark_as_processed "$filepath"
     else
         log_error "Failed to tag: $filepath (exit code: $status)"
     fi
@@ -224,7 +273,7 @@ watch_directory() {
     log "Models: $MODEL_DIR"
     log "Logs: $LOG_DIR"
     log "Settings: genres=$GENRES, threshold=$GENRE_THRESHOLD%, format=$GENRE_FORMAT"
-    log "Debounce: ${DEBOUNCE_SECONDS}s"
+    log "Debounce: ${DEBOUNCE_SECONDS}s, Cooldown: ${COOLDOWN_SECONDS}s"
     echo ""
     log "Waiting for new files..."
     
@@ -258,10 +307,11 @@ Essentia File Watcher for MusicBrainz Picard Integration
 Usage: $0 [options]
 
 Options:
-    -h, --help      Show this help message
-    -c, --check     Check dependencies only
-    -t, --test      Test mode - process existing files then exit
-    -d, --dry-run   Enable dry run mode (no tags written)
+    -h, --help          Show this help message
+    -c, --check         Check dependencies only
+    -t, --test          Test mode - process existing files then exit
+    -d, --dry-run       Enable dry run mode (no tags written)
+    -r, --reset-cache   Clear processed files cache (force reprocessing)
 
 Environment Variables:
     WATCH_DIR       Directory to watch (default: $WATCH_DIR)
@@ -269,7 +319,8 @@ Environment Variables:
     VENV_PATH       Path to Python venv
     MODEL_DIR       Path to Essentia models
     LOG_DIR         Directory for logs
-    DEBOUNCE_SECONDS  Wait time before processing (default: 5)
+    DEBOUNCE_SECONDS    Wait time before processing (default: 5)
+    COOLDOWN_SECONDS    Skip files processed within this time (default: 120)
     GENRES          Number of genres (default: 3)
     GENRE_THRESHOLD Genre confidence % (default: 15)
     MOOD_THRESHOLD  Mood confidence % (default: 0.5)
@@ -287,8 +338,14 @@ Examples:
     # Test with dry run
     DRY_RUN=true $0 --test
     
+    # Clear cache to force reprocessing
+    $0 --reset-cache
+    
     # Override settings
     GENRES=4 GENRE_THRESHOLD=20 $0
+    
+    # Shorter cooldown period (default 120s)
+    COOLDOWN_SECONDS=60 $0
 
 EOF
 }
@@ -296,6 +353,9 @@ EOF
 # Test mode - process existing files
 test_mode() {
     log "Test mode - scanning for existing audio files..."
+    
+    # Clear cache for test mode so files get reprocessed
+    rm -f "$PROCESSED_CACHE"
     
     find "$WATCH_DIR" -type f \( -iname "*.flac" -o -iname "*.mp3" -o -iname "*.ogg" -o -iname "*.m4a" -o -iname "*.wav" \) | head -5 | while read filepath; do
         process_file "$filepath"
@@ -318,6 +378,11 @@ main() {
         -t|--test)
             check_dependencies
             test_mode
+            exit 0
+            ;;
+        -r|--reset-cache)
+            rm -f "$PROCESSED_CACHE"
+            log "Processed files cache cleared"
             exit 0
             ;;
         -d|--dry-run)
