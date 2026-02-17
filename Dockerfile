@@ -26,7 +26,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # so we install it explicitly first then the remaining deps.
 RUN uv pip install --system --no-cache essentia-tensorflow
 COPY requirements.txt .
-RUN uv pip install --system --no-cache -r requirements.txt
+RUN uv pip install --system --no-cache mutagen numpy
 
 # Download ML models at build time
 COPY download_models.sh .
