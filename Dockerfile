@@ -36,6 +36,9 @@ RUN sed -i 's/\r$//' download_models.sh && bash download_models.sh
 # Copy application code
 COPY tag_music.py .
 
+# Suppress noisy TensorFlow logs (INFO + WARNING)
+ENV TF_CPP_MIN_LOG_LEVEL=3
+
 # Music directory mount point
 VOLUME ["/music"]
 
