@@ -18,7 +18,8 @@ Analyze your music collection using machine learning and write accurate genre an
 - 🎼 **400 genre classifications** - Uses Discogs taxonomy for detailed genre tagging
 - 😊 **Mood detection** - Detects moods like energetic, dark, happy, aggressive, etc.
 - 🎚️ **Analysis mode selection** - Choose genres only, moods only, or both per run
-- 🔄 **Batch processing** - Recursively process entire music libraries
+- � **Default library path** - Save your library root; browse it with an arrow-key folder navigator on every run
+- �🔄 **Batch processing** - Recursively process entire music libraries
 - 🎛️ **Fully configurable** - Interactive prompts for all settings on each run
 - 📝 **Comprehensive logging** - Detailed logs with confidence scores and predictions
 - 🏷️ **Multiple tag formats** - Choose how genre tags are formatted
@@ -176,8 +177,11 @@ python tag_music.py /path/to/music --auto --dry-run
 | `--quiet` | `-q` | Minimal output | - |
 | `--log-dir DIR` | - | Log file directory | ./ |
 | `--model-dir DIR` | - | Essentia models directory | ~/essentia_models |
+| `--library DIR` | - | Set & save default library path | - |
 
 > **Note:** `--no-genres` and `--no-moods` cannot be used together — at least one analysis type must be enabled.
+
+> **Tip:** Use `--library /path/to/library` once to save your library root. It is stored in `~/.essentia_tagger.json` and used automatically in future interactive runs.
 
 ---
 
@@ -202,6 +206,41 @@ See **[PICARD_AUTOMATION_SETUP.md](PICARD_AUTOMATION_SETUP.md)** for complete se
 ### Interactive Configuration
 
 Every run prompts you to configure:
+
+#### Default Library Path
+
+The first setting lets you define (or update) a **default music library root path**, saved persistently to `~/.essentia_tagger.json`.
+
+Once set, every subsequent run begins with a path selection menu:
+
+| Option | Description |
+|--------|-------------|
+| **1. Scan entire library** (default) | Recursively scan from the library root |
+| **2. Browse & select a folder** | Open the interactive folder browser to pick a sub-folder |
+| **3. Enter a custom path** | Type a path manually (original behaviour) |
+
+#### Interactive Folder Browser
+
+Option 2 opens a full-screen CLI folder navigator:
+
+```
+   📂 Browsing: /2Pac
+   📍 Full path: /srv/.../Music/Sources/Clean/2Pac
+   Use ↑↓ arrows to navigate, Enter to select, 'q' to cancel
+   ──────────────────────────────────────────────────
+   ▶ ✅ SELECT THIS FOLDER
+     ⬆️  ../ (go up)
+     📁 [1994] Me Against the World
+     📁 [1996] All Eyez on Me
+     📁 [1996] The Don Killuminati
+```
+
+| Key | Action |
+|-----|--------|
+| ↑ / ↓ | Move selection up/down |
+| Enter | Select folder or navigate into it |
+| Backspace | Go up one directory |
+| q | Cancel and return to path selection |
 
 #### Analysis Mode
 
@@ -539,6 +578,7 @@ Use mood tags to create dynamic playlists (energetic workout mixes, relaxing eve
 #### New Features
 
 - **Analysis mode selection** — New 3-way mode menu in interactive mode lets you choose to run genres only, moods only, or both. The corresponding ML models are only loaded when needed, reducing memory usage when running in single-mode. CLI equivalents: `--no-genres` and `--no-moods`.
+- **Default library path & folder browser** — Set a default music library root path (saved to `~/.essentia_tagger.json`). On each interactive run you can scan the whole library, drill into a subfolder using an arrow-key folder browser, or type a custom path. No more copying and pasting long paths. CLI equivalent: `--library /path/to/library`.
 - **Wide audio format support** — Tag writing now covers 12 audio container formats via native tag systems:
   - Vorbis Comments: FLAC, OGG Vorbis, OGG Opus
   - ID3v2: MP3, AIFF, WAV, DSF
