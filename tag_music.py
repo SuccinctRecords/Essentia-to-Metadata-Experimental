@@ -6,13 +6,11 @@ Supports both interactive mode and CLI arguments for automation
 import os
 import json
 import sys
-import re
 import argparse
 from pathlib import Path
 from datetime import datetime
 import numpy as np
 from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs, TensorflowPredict2D
-import mutagen
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, TCON, COMM
@@ -117,22 +115,31 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     
     def log_config(self, config, music_path):
         """Log configuration"""
+        if config.enable_genres and config.enable_moods:
+            mode_label = "Genres & Moods"
+        elif config.enable_genres:
+            mode_label = "Genres only"
+        else:
+            mode_label = "Moods only"
+
         config_text = f"""
 CONFIGURATION:
 {'-' * 80}
 Target Directory: {music_path}
 Model Directory: {MODEL_DIR}
-
-Genre Settings:
+Analysis Mode: {mode_label}
+"""
+        if config.enable_genres:
+            config_text += f"""Genre Settings:
   - Number of genres: {config.top_n_genres}
   - Confidence threshold: {config.genre_threshold:.1%}
   - Genre format: {config.genre_format}
-
-Mood Settings:
-  - Enable moods: {config.enable_moods}
+"""
+        if config.enable_moods:
+            config_text += f"""Mood Settings:
   - Confidence threshold: {config.mood_threshold:.1%}
-
-Other Settings:
+"""
+        config_text += f"""Other Settings:
   - Dry run mode: {config.dry_run}
   - Write confidence tags: {config.write_confidence_tags}
   - Overwrite existing: {config.overwrite_existing}
@@ -155,6 +162,8 @@ FILE: {relative_path}
             log_entry += "GENRES (raw predictions):\n"
             for g in results['genres']:
                 log_entry += f"  • {g['label']}: {g['confidence']:.2%}\n"
+        elif 'genres' not in results:
+            log_entry += "GENRES: Disabled\n"
         else:
             log_entry += "GENRES: None passed threshold\n"
         
@@ -175,6 +184,8 @@ FILE: {relative_path}
             log_entry += f"\nMOODS (raw predictions - {len(results['moods'])} total):\n"
             for m in results['moods']:
                 log_entry += f"  • {m['label']}: {m['confidence']:.2%}\n"
+        elif 'moods' not in results:
+            log_entry += "\nMOODS: Disabled\n"
         else:
             log_entry += "\nMOODS: None passed threshold\n"
         
@@ -219,15 +230,16 @@ class Config:
     """Runtime configuration from user prompts"""
     def __init__(self):
         self.dry_run = True
+        self.enable_genres = True
+        self.enable_moods = True
         self.top_n_genres = 3
         self.genre_threshold = 0.15
-        self.mood_threshold = 0.01
-        self.enable_moods = True
+        self.mood_threshold = 0.005
         self.write_confidence_tags = True
         self.overwrite_existing = False
         self.verbose = True
         self.log_file = None
-        self.genre_format = 'parent_child'  # New: genre formatting style
+        self.genre_format = 'parent_child'
 
 
 class EssentiaAnalyzer:
@@ -244,21 +256,23 @@ class EssentiaAnalyzer:
             output="PartitionedCall:1"
         )
         
-        # Load genre model
-        self.genre_model = TensorflowPredict2D(
-            graphFilename=GENRE_MODEL,
-            input="serving_default_model_Placeholder",
-            output="PartitionedCall"
-        )
+        # Conditionally load genre model
+        self.genre_model = None
+        self.genre_labels = None
+        if config.enable_genres:
+            self.genre_model = TensorflowPredict2D(
+                graphFilename=GENRE_MODEL,
+                input="serving_default_model_Placeholder",
+                output="PartitionedCall"
+            )
+            with open(GENRE_METADATA, 'r') as f:
+                metadata = json.load(f)
+                self.genre_labels = metadata['classes']
+            logger.log(f"   ✅ Loaded {len(self.genre_labels)} genre classes")
+        else:
+            logger.log("   ⏭️  Genre analysis disabled by user")
         
-        # Load genre class labels
-        with open(GENRE_METADATA, 'r') as f:
-            metadata = json.load(f)
-            self.genre_labels = metadata['classes']
-        
-        logger.log(f"   ✅ Loaded {len(self.genre_labels)} genre classes")
-        
-        # Optionally load mood model
+        # Conditionally load mood model
         self.mood_model = None
         self.mood_labels = None
         if config.enable_moods and os.path.exists(MOOD_MODEL):
@@ -297,44 +311,47 @@ class EssentiaAnalyzer:
             # Get embeddings
             embeddings = self.embedding_model(audio)
             
-            # Predict genres
-            genre_predictions = self.genre_model(embeddings)
-            genre_activations = np.mean(genre_predictions, axis=0)
+            results = {}
             
-            # Get top genres with threshold
-            top_indices = np.argsort(genre_activations)[::-1][:self.config.top_n_genres * 2]
-            genres = []
-            for idx in top_indices:
-                if len(genres) >= self.config.top_n_genres:
-                    break
-                if genre_activations[idx] >= self.config.genre_threshold:
+            # Predict genres (if model loaded)
+            if self.genre_model:
+                genre_predictions = self.genre_model(embeddings)
+                genre_activations = np.mean(genre_predictions, axis=0)
+                
+                # Get top genres with threshold
+                top_indices = np.argsort(genre_activations)[::-1][:self.config.top_n_genres * 2]
+                genres = []
+                for idx in top_indices:
+                    if len(genres) >= self.config.top_n_genres:
+                        break
+                    if genre_activations[idx] >= self.config.genre_threshold:
+                        genres.append({
+                            'label': self.genre_labels[idx],
+                            'confidence': float(genre_activations[idx])
+                        })
+                
+                # If no genres pass threshold, take top 1 anyway
+                if not genres:
+                    top_idx = np.argmax(genre_activations)
                     genres.append({
-                        'label': self.genre_labels[idx],
-                        'confidence': float(genre_activations[idx])
+                        'label': self.genre_labels[top_idx],
+                        'confidence': float(genre_activations[top_idx])
                     })
-            
-            # If no genres pass threshold, take top 1 anyway
-            if not genres:
-                top_idx = np.argmax(genre_activations)
-                genres.append({
-                    'label': self.genre_labels[top_idx],
-                    'confidence': float(genre_activations[top_idx])
-                })
-            
-            results = {'genres': genres}
-            
-            # Format genres for tag writing
-            results['formatted_genres'] = [
-                format_genre_tag(g['label'], style=self.config.genre_format) 
-                for g in genres
-            ]
-            
-            # Store all genre activations for logging
-            all_top_indices = np.argsort(genre_activations)[::-1][:10]
-            results['all_genres_debug'] = [
-                (self.genre_labels[idx], float(genre_activations[idx])) 
-                for idx in all_top_indices
-            ]
+                
+                results['genres'] = genres
+                
+                # Format genres for tag writing
+                results['formatted_genres'] = [
+                    format_genre_tag(g['label'], style=self.config.genre_format) 
+                    for g in genres
+                ]
+                
+                # Store all genre activations for logging
+                all_top_indices = np.argsort(genre_activations)[::-1][:10]
+                results['all_genres_debug'] = [
+                    (self.genre_labels[idx], float(genre_activations[idx])) 
+                    for idx in all_top_indices
+                ]
             
             # Predict moods (if model loaded)
             if self.mood_model:
@@ -391,12 +408,12 @@ class TagWriter:
     def write_tags(self, filepath, results):
         """Write genre/mood to file tags"""
         if self.config.dry_run:
-            genre_info = []
-            if results.get('formatted_genres'):
-                genre_info.append(f"Genres: {', '.join(results['formatted_genres'])}")
-            if results.get('formatted_moods'):
-                genre_info.append(f"Moods: {', '.join(results['formatted_moods'][:3])}")
-            self.logger.log(f"     [DRY RUN] Would write: {' | '.join(genre_info)}")
+            tag_info = []
+            if self.config.enable_genres and results.get('formatted_genres'):
+                tag_info.append(f"Genres: {', '.join(results['formatted_genres'])}")
+            if self.config.enable_moods and results.get('formatted_moods'):
+                tag_info.append(f"Moods: {', '.join(results['formatted_moods'][:3])}")
+            self.logger.log(f"     [DRY RUN] Would write: {' | '.join(tag_info)}")
             return
         
         try:
@@ -415,98 +432,88 @@ class TagWriter:
     def _write_flac(self, filepath, results):
         """Write to FLAC tags"""
         audio = FLAC(filepath)
-        
-        # Check if we should skip existing tags
-        if not self.config.overwrite_existing and 'GENRE' in audio:
-            self.logger.log(f"     ⏭️  Skipping (already has GENRE tag)")
-            return
-        
         tags_written = []
         
         # Write genres (using formatted versions)
-        if results.get('formatted_genres'):
-            genre_str = '; '.join(results['formatted_genres'])
-            audio['GENRE'] = genre_str
-            tags_written.append(f"GENRE={genre_str}")
-            
-            # Store confidence scores if enabled (use raw labels for clarity)
-            if self.config.write_confidence_tags and results.get('genres'):
-                genre_details = [f"{g['label']}: {g['confidence']:.2%}" for g in results['genres']]
-                confidence_str = ', '.join(genre_details)
-                audio['ESSENTIA_GENRE'] = f"Essentia: {confidence_str}"
-                tags_written.append(f"ESSENTIA_GENRE={confidence_str}")
+        if self.config.enable_genres and results.get('formatted_genres'):
+            if self.config.overwrite_existing or 'GENRE' not in audio:
+                genre_str = '; '.join(results['formatted_genres'])
+                audio['GENRE'] = genre_str
+                tags_written.append(f"GENRE={genre_str}")
+                
+                if self.config.write_confidence_tags and results.get('genres'):
+                    genre_details = [f"{g['label']}: {g['confidence']:.2%}" for g in results['genres']]
+                    confidence_str = ', '.join(genre_details)
+                    audio['ESSENTIA_GENRE'] = f"Essentia: {confidence_str}"
+                    tags_written.append(f"ESSENTIA_GENRE={confidence_str}")
+            else:
+                self.logger.log("     ⏭️  Skipping genres (already has GENRE tag)")
         
         # Write moods (using formatted versions)
-        if results.get('formatted_moods'):
-            mood_str = '; '.join(results['formatted_moods'][:3])
-            audio['MOOD'] = mood_str
-            tags_written.append(f"MOOD={mood_str}")
-            
-            if self.config.write_confidence_tags and results.get('moods'):
-                mood_details = [f"{m['label']}: {m['confidence']:.2%}" for m in results['moods'][:3]]
-                mood_conf_str = ', '.join(mood_details)
-                audio['ESSENTIA_MOOD'] = f"Essentia: {mood_conf_str}"
-                tags_written.append(f"ESSENTIA_MOOD={mood_conf_str}")
+        if self.config.enable_moods and results.get('formatted_moods'):
+            if self.config.overwrite_existing or 'MOOD' not in audio:
+                mood_str = '; '.join(results['formatted_moods'][:3])
+                audio['MOOD'] = mood_str
+                tags_written.append(f"MOOD={mood_str}")
+                
+                if self.config.write_confidence_tags and results.get('moods'):
+                    mood_details = [f"{m['label']}: {m['confidence']:.2%}" for m in results['moods'][:3]]
+                    mood_conf_str = ', '.join(mood_details)
+                    audio['ESSENTIA_MOOD'] = f"Essentia: {mood_conf_str}"
+                    tags_written.append(f"ESSENTIA_MOOD={mood_conf_str}")
+            else:
+                self.logger.log("     ⏭️  Skipping moods (already has MOOD tag)")
         
-        audio.save()
-        
-        # Log what was written
-        self.logger.log(f"     ✅ Written tags: {', '.join(tags_written)}", console=False)
+        if tags_written:
+            audio.save()
+            self.logger.log(f"     ✅ Written tags: {', '.join(tags_written)}", console=False)
     
     def _write_mp3(self, filepath, results):
         """Write to MP3 ID3 tags"""
         try:
             audio = ID3(filepath)
-        except:
+        except Exception:
             audio = ID3()
-        
-        # Check if we should skip existing tags
-        if not self.config.overwrite_existing:
-            try:
-                existing = audio.getall('TCON')
-                if existing:
-                    self.logger.log(f"     ⏭️  Skipping (already has GENRE tag)")
-                    return
-            except:
-                pass
         
         tags_written = []
         
         # Write genres (using formatted versions)
-        if results.get('formatted_genres'):
-            genre_str = '; '.join(results['formatted_genres'])
-            audio.delall('TCON')
-            audio.add(TCON(encoding=3, text=genre_str))
-            tags_written.append(f"TCON={genre_str}")
-            
-            # Store confidence in comment if enabled (use raw labels)
-            if self.config.write_confidence_tags and results.get('genres'):
-                genre_details = [f"{g['label']}: {g['confidence']:.2%}" for g in results['genres']]
-                confidence_str = ', '.join(genre_details)
-                audio.delall('COMM::eng')
-                audio.add(COMM(
-                    encoding=3,
-                    lang='eng',
-                    desc='Essentia Genre',
-                    text=confidence_str
-                ))
-                tags_written.append(f"COMM(genre)={confidence_str}")
-            
-            # Write moods in a separate comment if available (using formatted versions)
-            if results.get('formatted_moods') and self.config.write_confidence_tags:
-                mood_str = '; '.join(results['formatted_moods'][:3])
-                audio.add(COMM(
-                    encoding=3,
-                    lang='eng',
-                    desc='Essentia Mood',
-                    text=mood_str
-                ))
-                tags_written.append(f"COMM(mood)={mood_str}")
+        if self.config.enable_genres and results.get('formatted_genres'):
+            has_existing_genre = bool(audio.getall('TCON'))
+            if self.config.overwrite_existing or not has_existing_genre:
+                genre_str = '; '.join(results['formatted_genres'])
+                audio.delall('TCON')
+                audio.add(TCON(encoding=3, text=genre_str))
+                tags_written.append(f"TCON={genre_str}")
+                
+                if self.config.write_confidence_tags and results.get('genres'):
+                    genre_details = [f"{g['label']}: {g['confidence']:.2%}" for g in results['genres']]
+                    confidence_str = ', '.join(genre_details)
+                    audio.delall('COMM::eng')
+                    audio.add(COMM(
+                        encoding=3,
+                        lang='eng',
+                        desc='Essentia Genre',
+                        text=confidence_str
+                    ))
+                    tags_written.append(f"COMM(genre)={confidence_str}")
+            else:
+                self.logger.log("     ⏭️  Skipping genres (already has GENRE tag)")
         
-        audio.save(filepath)
+        # Write moods in a separate comment (independent of genres)
+        if self.config.enable_moods and results.get('formatted_moods'):
+            mood_str = '; '.join(results['formatted_moods'][:3])
+            audio.add(COMM(
+                encoding=3,
+                lang='eng',
+                desc='Essentia Mood',
+                text=mood_str
+            ))
+            tags_written.append(f"COMM(mood)={mood_str}")
         
-        # Log what was written
-        self.logger.log(f"     ✅ Written tags: {', '.join(tags_written)}", console=False)
+        if tags_written:
+            audio.save(filepath)
+            self.logger.log(f"     ✅ Written tags: {', '.join(tags_written)}", console=False)
 
 
 def scan_library(root_path, analyzer, tag_writer, config, logger):
@@ -541,22 +548,23 @@ def scan_library(root_path, analyzer, tag_writer, config, logger):
         results = analyzer.analyze_file(filepath)
         
         if results:
-            # Print results to console (formatted versions)
-            if results.get('genres'):
-                genre_list = [f"{g['label']} ({g['confidence']:.1%})" for g in results['genres']]
-                logger.log(f"     🎸 Raw: {', '.join(genre_list)}")
+            # Print genre results to console
+            if config.enable_genres:
+                if results.get('genres'):
+                    genre_list = [f"{g['label']} ({g['confidence']:.1%})" for g in results['genres']]
+                    logger.log(f"     🎸 Raw: {', '.join(genre_list)}")
+                if results.get('formatted_genres'):
+                    logger.log(f"     🎸 Formatted: {', '.join(results['formatted_genres'])}")
             
-            if results.get('formatted_genres'):
-                logger.log(f"     🎸 Formatted: {', '.join(results['formatted_genres'])}")
-            
-            if results.get('moods'):
-                mood_list = [f"{m['label']} ({m['confidence']:.1%})" for m in results['moods'][:3]]
-                logger.log(f"     😊 Raw: {', '.join(mood_list)}")
-            
-            if results.get('formatted_moods'):
-                logger.log(f"     😊 Formatted: {', '.join(results['formatted_moods'][:3])}")
-            elif results.get('moods') is not None and len(results.get('moods', [])) == 0:
-                logger.log(f"     😊 Moods: None above threshold ({config.mood_threshold:.2%})")
+            # Print mood results to console
+            if config.enable_moods:
+                if results.get('moods'):
+                    mood_list = [f"{m['label']} ({m['confidence']:.1%})" for m in results['moods'][:3]]
+                    logger.log(f"     😊 Raw: {', '.join(mood_list)}")
+                if results.get('formatted_moods'):
+                    logger.log(f"     😊 Formatted: {', '.join(results['formatted_moods'][:3])}")
+                elif results.get('moods') is not None and len(results.get('moods', [])) == 0:
+                    logger.log(f"     😊 Moods: None above threshold ({config.mood_threshold:.2%})")
             
             # Show debug info if verbose
             if config.verbose and results.get('all_genres_debug'):
@@ -703,53 +711,61 @@ def configure_settings():
     print("   Recommended: Enable for first run to see results")
     config.dry_run = get_yes_no("Enable dry run mode?", default=True)
     
-    # Number of genres
+    # Analysis mode
     print("\n" + "─" * 70)
-    print("🎸 GENRE SETTINGS")
-    print("   How many genre tags to write per song")
-    print("   Recommended: 2-4 genres")
-    print("   • 1 = Only top genre")
-    print("   • 3 = Balanced (good variety)")
-    print("   • 5 = Comprehensive (may include less relevant)")
-    config.top_n_genres = get_int_input("Number of genres to write", default=3, min_val=1, max_val=10)
+    print("🎯 ANALYSIS MODE")
+    print("   What to analyze and tag:")
+    print("   • 1 = Genres & Moods (both)")
+    print("   • 2 = Genres only")
+    print("   • 3 = Moods only")
+    mode_choice = get_int_input("Analysis mode", default=1, min_val=1, max_val=3)
+    config.enable_genres = mode_choice in (1, 2)
+    config.enable_moods = mode_choice in (1, 3)
     
-    # Genre threshold
-    print("\n   Genre confidence threshold (as percentage)")
-    print("   Only include genres above this confidence level")
-    print("   • 5% = Very inclusive (more genres)")
-    print("   • 15% = Balanced (recommended)")
-    print("   • 25% = Strict (fewer, higher confidence)")
-    print("   • 35% = Very strict (may get 0-1 genres)")
-    threshold_pct = get_float_input("Genre threshold (%)", default=15, min_val=1, max_val=50)
-    config.genre_threshold = threshold_pct / 100.0
+    # Genre settings (only if genres enabled)
+    if config.enable_genres:
+        print("\n" + "─" * 70)
+        print("🎸 GENRE SETTINGS")
+        print("   How many genre tags to write per song")
+        print("   Recommended: 2-4 genres")
+        print("   • 1 = Only top genre")
+        print("   • 3 = Balanced (good variety)")
+        print("   • 5 = Comprehensive (may include less relevant)")
+        config.top_n_genres = get_int_input("Number of genres to write", default=3, min_val=1, max_val=10)
+        
+        # Genre threshold
+        print("\n   Genre confidence threshold (as percentage)")
+        print("   Only include genres above this confidence level")
+        print("   • 5% = Very inclusive (more genres)")
+        print("   • 15% = Balanced (recommended)")
+        print("   • 25% = Strict (fewer, higher confidence)")
+        print("   • 35% = Very strict (may get 0-1 genres)")
+        threshold_pct = get_float_input("Genre threshold (%)", default=15, min_val=1, max_val=50)
+        config.genre_threshold = threshold_pct / 100.0
+        
+        # Genre formatting
+        print("\n   Genre tag formatting")
+        print("   How to format genre tags like 'Rock---Alternative Rock'")
+        print("   • 1 = 'Rock - Alternative Rock' (parent - child)")
+        print("   • 2 = 'Alternative Rock - Rock' (child - parent)")
+        print("   • 3 = 'Alternative Rock' (child only)")
+        print("   • 4 = 'Rock---Alternative Rock' (raw/no formatting)")
+        format_choice = get_int_input("Genre format", default=1, min_val=1, max_val=4)
+        format_map = {
+            1: 'parent_child',
+            2: 'child_parent',
+            3: 'child_only',
+            4: 'raw'
+        }
+        config.genre_format = format_map[format_choice]
     
-    # Genre formatting
-    print("\n   Genre tag formatting")
-    print("   How to format genre tags like 'Rock---Alternative Rock'")
-    print("   • 1 = 'Rock - Alternative Rock' (parent - child)")
-    print("   • 2 = 'Alternative Rock - Rock' (child - parent)")
-    print("   • 3 = 'Alternative Rock' (child only)")
-    print("   • 4 = 'Rock---Alternative Rock' (raw/no formatting)")
-    format_choice = get_int_input("Genre format", default=1, min_val=1, max_val=4)
-    format_map = {
-        1: 'parent_child',
-        2: 'child_parent',
-        3: 'child_only',
-        4: 'raw'
-    }
-    config.genre_format = format_map[format_choice]
-    
-    # Enable moods
-    print("\n" + "─" * 70)
-    print("😊 MOOD ANALYSIS")
-    print("   Analyze and tag moods/themes (e.g., energetic, dark, happy)")
-    print("   Note: Mood predictions are typically MUCH lower confidence than genres")
-    print("   Often in the 0.01% - 5% range!")
-    config.enable_moods = get_yes_no("Enable mood analysis?", default=True)
-    
+    # Mood settings (only if moods enabled)
     if config.enable_moods:
-        print("\n   Mood confidence threshold (as percentage)")
-        print("   Moods naturally have VERY low confidence")
+        print("\n" + "─" * 70)
+        print("😊 MOOD SETTINGS")
+        print("   Mood confidence threshold (as percentage)")
+        print("   Note: Mood predictions are typically MUCH lower confidence than genres")
+        print("   Often in the 0.01% - 5% range!")
         print("   • 0.1% = Very inclusive (will get many moods)")
         print("   • 0.5% = Inclusive (recommended to start)")
         print("   • 1% = Balanced")
@@ -767,10 +783,10 @@ def configure_settings():
     # Overwrite existing
     print("\n" + "─" * 70)
     print("♻️  EXISTING TAGS")
-    print("   What to do if files already have genre tags")
+    print("   What to do if files already have existing tags")
     print("   • Overwrite: Replace existing tags")
     print("   • Skip: Leave files with existing tags untouched")
-    config.overwrite_existing = get_yes_no("Overwrite existing genre tags?", default=False)
+    config.overwrite_existing = get_yes_no("Overwrite existing tags?", default=False)
     
     # Verbose output
     print("\n" + "─" * 70)
@@ -788,13 +804,21 @@ def display_config_summary(config, music_path):
     print("=" * 70)
     print(f"📂 Target directory: {music_path}")
     print(f"📁 Model directory: {MODEL_DIR}")
-    print(f"\n🎸 Genre Settings:")
-    print(f"   • Number of genres: {config.top_n_genres}")
-    print(f"   • Confidence threshold: {config.genre_threshold:.2%}")
-    print(f"   • Format style: {config.genre_format}")
-    print(f"\n😊 Mood Settings:")
-    print(f"   • Enable moods: {config.enable_moods}")
+    
+    if config.enable_genres and config.enable_moods:
+        print(f"\n🎯 Analysis mode: Genres & Moods")
+    elif config.enable_genres:
+        print(f"\n🎯 Analysis mode: Genres only")
+    else:
+        print(f"\n🎯 Analysis mode: Moods only")
+    
+    if config.enable_genres:
+        print(f"\n🎸 Genre Settings:")
+        print(f"   • Number of genres: {config.top_n_genres}")
+        print(f"   • Confidence threshold: {config.genre_threshold:.2%}")
+        print(f"   • Format style: {config.genre_format}")
     if config.enable_moods:
+        print(f"\n😊 Mood Settings:")
         print(f"   • Confidence threshold: {config.mood_threshold:.2%}")
     print(f"\n📊 Other Settings:")
     print(f"   • Dry run mode: {config.dry_run}")
@@ -829,13 +853,19 @@ def parse_arguments():
         epilog="""
 Examples:
   # Interactive mode (no arguments)
-  python tag_music.py This is default behaviour
+  python tag_music.py
   
   # Automated mode with path
   python tag_music.py /path/to/music --auto
   
   # Automated mode with custom settings
   python tag_music.py /path/to/music --auto --genres 4 --genre-threshold 20 --mood-threshold 1
+  
+  # Moods only (no genre tagging)
+  python tag_music.py /path/to/music --auto --no-genres
+  
+  # Genres only (no mood tagging)
+  python tag_music.py /path/to/music --auto --no-moods
   
   # Watch a specific file (for file watcher integration)
   python tag_music.py /path/to/song.flac --auto --single-file
@@ -895,11 +925,17 @@ Genre format styles:
         help='Genre tag format style (default: parent_child)'
     )
     
-    # Mood settings
+    # Analysis mode settings
+    parser.add_argument(
+        '--no-genres',
+        action='store_true',
+        help='Disable genre analysis (moods only)'
+    )
+    
     parser.add_argument(
         '--no-moods',
         action='store_true',
-        help='Disable mood analysis'
+        help='Disable mood analysis (genres only)'
     )
     
     parser.add_argument(
@@ -956,12 +992,18 @@ Genre format styles:
 
 def config_from_args(args):
     """Create Config object from command-line arguments"""
+    if args.no_genres and args.no_moods:
+        print("❌ Error: Cannot disable both genres and moods")
+        print("   Use --no-genres OR --no-moods, not both")
+        sys.exit(1)
+    
     config = Config()
     config.dry_run = args.dry_run
+    config.enable_genres = not args.no_genres
+    config.enable_moods = not args.no_moods
     config.top_n_genres = args.genres
     config.genre_threshold = args.genre_threshold / 100.0
     config.mood_threshold = args.mood_threshold / 100.0
-    config.enable_moods = not args.no_moods
     config.write_confidence_tags = not args.no_confidence_tags
     config.overwrite_existing = args.overwrite
     config.verbose = not args.quiet
@@ -999,14 +1041,14 @@ def process_single_file(filepath, analyzer, tag_writer, config, logger):
     
     if results:
         # Print results
-        if results.get('genres'):
-            genre_list = [f"{g['label']} ({g['confidence']:.1%})" for g in results['genres']]
-            logger.log(f"   🎸 Genres: {', '.join(genre_list)}")
+        if config.enable_genres:
+            if results.get('genres'):
+                genre_list = [f"{g['label']} ({g['confidence']:.1%})" for g in results['genres']]
+                logger.log(f"   🎸 Genres: {', '.join(genre_list)}")
+            if results.get('formatted_genres'):
+                logger.log(f"   🎸 Formatted: {', '.join(results['formatted_genres'])}")
         
-        if results.get('formatted_genres'):
-            logger.log(f"   🎸 Formatted: {', '.join(results['formatted_genres'])}")
-        
-        if results.get('moods'):
+        if config.enable_moods and results.get('moods'):
             mood_list = [f"{m['label']} ({m['confidence']:.1%})" for m in results['moods'][:3]]
             logger.log(f"   😊 Moods: {', '.join(mood_list)}")
         
@@ -1060,7 +1102,8 @@ def main():
             mode_str = "DRY RUN" if config.dry_run else "LIVE"
             logger.log(f"🎸 Essentia Tagger [{mode_str}]")
             logger.log(f"   Path: {music_path}")
-            logger.log(f"   Genres: {config.top_n_genres} (threshold: {config.genre_threshold:.1%})")
+            if config.enable_genres:
+                logger.log(f"   Genres: {config.top_n_genres} (threshold: {config.genre_threshold:.1%})")
             if config.enable_moods:
                 logger.log(f"   Moods: enabled (threshold: {config.mood_threshold:.2%})")
             logger.log("")
