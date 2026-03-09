@@ -151,10 +151,15 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         else:
             mode_label = "Moods only"
 
+        if isinstance(music_path, list):
+            path_str = '\n                 '.join(music_path)
+        else:
+            path_str = music_path
+
         config_text = f"""
 CONFIGURATION:
 {'-' * 80}
-Target Directory: {music_path}
+Target Directory: {path_str}
 Model Directory: {MODEL_DIR}
 Analysis Mode: {mode_label}
 """
@@ -876,18 +881,19 @@ def _clear_lines(n):
 
 
 def browse_directory(start_path):
-    """Interactive directory browser with arrow-key navigation.
+    """Interactive directory browser with arrow-key navigation and multi-select.
     
     Args:
         start_path: Root directory to start browsing from
     
     Returns:
-        str - selected directory path, or None if cancelled
+        list[str] - one or more selected directory paths, or None if cancelled
     """
     current_path = Path(start_path)
     selected_idx = 0
     page_size = 15
     scroll_offset = 0
+    selected_set = []  # ordered list of selected folder paths (str)
     
     while True:
         # Get subdirectories of current path
@@ -905,11 +911,16 @@ def browse_directory(start_path):
         
         # Build menu items
         items = []
-        items.append(('✅ SELECT THIS FOLDER', 'select'))
+        if selected_set:
+            action_label = f"✅ DONE — {len(selected_set)} folder(s) selected"
+        else:
+            action_label = "✅ SELECT THIS FOLDER"
+        items.append((action_label, 'select'))
         if current_path != Path(start_path):
             items.append(('⬆️  ../ (go up)', 'up'))
         for d in subdirs:
-            items.append((f"📁 {d.name}", str(d)))
+            marker = " [✓]" if str(d) in selected_set else ""
+            items.append((f"📁 {d.name}{marker}", str(d)))
         
         # Clamp selection
         if selected_idx >= len(items):
@@ -939,7 +950,7 @@ def browse_directory(start_path):
         
         lines.append(f"\n   📂 Browsing: {rel_path}")
         lines.append(f"   📍 Full path: {current_path}")
-        lines.append("   Use ↑↓ arrows to navigate, Enter to select, 'q' to cancel")
+        lines.append("   ↑↓ navigate | Enter = open folder | Space = select/deselect | 'q' cancel")
         lines.append("   " + "─" * 50)
         
         for i, (label, _action) in enumerate(visible_items):
@@ -974,10 +985,21 @@ def browse_directory(start_path):
         elif key == 'down':
             if selected_idx < len(items) - 1:
                 selected_idx += 1
+        elif key == ' ':
+            # Space toggles selection on a folder item (not on 'select' or 'up')
+            _label, action = items[selected_idx]
+            if action not in ('select', 'up'):
+                if action in selected_set:
+                    selected_set.remove(action)
+                else:
+                    selected_set.append(action)
         elif key == 'enter':
             _label, action = items[selected_idx]
             if action == 'select':
-                return str(current_path)
+                if selected_set:
+                    return selected_set  # multi-select confirmed
+                else:
+                    return [str(current_path)]  # single: current folder
             elif action == 'up':
                 current_path = current_path.parent
                 selected_idx = 0
@@ -1049,22 +1071,28 @@ def get_music_path(config):
                 print(f"🎵 Found ~{audio_count} audio files")
                 confirm = input("\nProceed with this directory? [Y/n]: ").strip().lower()
                 if confirm in ('', 'y', 'yes'):
-                    return str(path)
+                    return [str(path)]
                 else:
                     print("Cancelled.\n")
                     continue
             elif choice == '2':
                 print("\n📂 Opening folder browser...")
-                selected = browse_directory(library_path)
+                selected = browse_directory(library_path)  # list[str] or None
                 if selected:
-                    path = Path(selected)
-                    sample_files = list(path.rglob('*'))
-                    audio_count = len([f for f in sample_files if f.suffix.lower() in AUDIO_EXTENSIONS])
-                    print(f"\n📂 Selected: {path}")
-                    print(f"🎵 Found ~{audio_count} audio files")
-                    confirm = input("\nProceed with this directory? [Y/n]: ").strip().lower()
+                    total_audio = sum(
+                        len([f for f in Path(p).rglob('*') if f.suffix.lower() in AUDIO_EXTENSIONS])
+                        for p in selected
+                    )
+                    if len(selected) == 1:
+                        print(f"\n📂 Selected: {selected[0]}")
+                    else:
+                        print(f"\n📂 Selected {len(selected)} folders:")
+                        for p in selected:
+                            print(f"   • {p}")
+                    print(f"🎵 Found ~{total_audio} audio files")
+                    confirm = input("\nProceed with this selection? [Y/n]: ").strip().lower()
                     if confirm in ('', 'y', 'yes'):
-                        return str(path)
+                        return selected
                     else:
                         print("Cancelled. Let's try again.\n")
                         continue
@@ -1138,7 +1166,7 @@ def get_music_path(config):
         
         confirm = input("\nProceed with this directory? [Y/n]: ").strip().lower()
         if confirm in ['', 'y', 'yes']:
-            return str(path)
+            return [str(path)]
         else:
             print("Cancelled. Let's try again.\n")
 
@@ -1301,7 +1329,13 @@ def display_config_summary(config, music_path):
     print("\n" + "=" * 70)
     print("📋 FINAL SETTINGS")
     print("=" * 70)
-    print(f"📂 Target directory: {music_path}")
+    if isinstance(music_path, list) and len(music_path) > 1:
+        print(f"📂 Target folders ({len(music_path)}):")
+        for p in music_path:
+            print(f"   • {p}")
+    else:
+        target = music_path[0] if isinstance(music_path, list) else music_path
+        print(f"📂 Target directory: {target}")
     print(f"📁 Model directory: {MODEL_DIR}")
     if config.default_library_path:
         print(f"📚 Default library: {config.default_library_path}")
@@ -1664,24 +1698,29 @@ def main():
             temp_config.default_library_path = saved.get('default_library_path')
             
             # Get path from user
-            music_path = get_music_path(temp_config)
+            music_paths = get_music_path(temp_config)  # list[str]
             
             # Configure settings interactively
             config = configure_settings()
             
             # Show summary and confirm
-            display_config_summary(config, music_path)
+            display_config_summary(config, music_paths)
             
             # Initialize logger
             logger = Logger(config.log_file)
-            logger.log_config(config, music_path)
+            logger.log_config(config, music_paths)
             
             # Initialize
             analyzer = EssentiaAnalyzer(config, logger)
             tag_writer = TagWriter(config, logger)
             
-            # Process library
-            scan_library(music_path, analyzer, tag_writer, config, logger)
+            # Process each selected path
+            for music_path in music_paths:
+                if len(music_paths) > 1:
+                    logger.log(f"\n{'=' * 70}")
+                    logger.log(f"📂 Processing: {music_path}")
+                    logger.log(f"{'=' * 70}")
+                scan_library(music_path, analyzer, tag_writer, config, logger)
             
             logger.log("\n" + "=" * 70)
             logger.log("✅ PROCESSING COMPLETE!")
