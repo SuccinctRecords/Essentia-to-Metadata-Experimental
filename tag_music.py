@@ -1004,6 +1004,30 @@ def get_music_path(config):
     
     library_path = config.default_library_path
     
+    if library_path and not os.path.isdir(library_path):
+        print(f"⚠️  Default library path no longer exists: {library_path}")
+        library_path = None
+        print()
+    
+    if not library_path:
+        # No library path set yet — offer to set one now
+        print("💡 TIP: You can set a default library path for quick access on future runs.")
+        set_now = input("   Set a default library path now? [y/N]: ").strip().lower()
+        if set_now in ('y', 'yes'):
+            new_path = input("   Enter library path: ").strip().strip('\'"')
+            new_path = os.path.expanduser(new_path)
+            if os.path.isdir(new_path):
+                saved = load_settings()
+                saved['default_library_path'] = new_path
+                save_settings(saved)
+                config.default_library_path = new_path
+                library_path = new_path
+                print(f"   ✅ Library path saved: {library_path}")
+            else:
+                print(f"   ❌ Path does not exist: {new_path}")
+        print()
+    
+    # Show library scan options if a library path is known
     if library_path and os.path.isdir(library_path):
         print(f"📚 Default library: {library_path}")
         print()
@@ -1012,11 +1036,9 @@ def get_music_path(config):
         print("   2 = Browse & select a folder within library")
         print("   3 = Enter a custom path")
         print()
-        
         while True:
             choice = input("Select option [1]: ").strip()
             if choice in ('', '1'):
-                # Scan entire library
                 path = Path(library_path)
                 sample_files = list(path.rglob('*'))
                 audio_count = len([f for f in sample_files if f.suffix.lower() in AUDIO_EXTENSIONS])
@@ -1028,9 +1050,7 @@ def get_music_path(config):
                 else:
                     print("Cancelled.\n")
                     continue
-            
             elif choice == '2':
-                # Browse library
                 print("\n📂 Opening folder browser...")
                 selected = browse_directory(library_path)
                 if selected:
@@ -1048,16 +1068,10 @@ def get_music_path(config):
                 else:
                     print("\nBrowsing cancelled. Let's try again.\n")
                     continue
-            
             elif choice == '3':
                 break  # Fall through to manual path entry
-            
             else:
                 print("   ⚠️  Please enter 1, 2, or 3")
-    else:
-        if library_path:
-            print(f"⚠️  Default library path no longer exists: {library_path}")
-            print()
     
     # Manual path entry (original flow)
     print("Example paths:")
