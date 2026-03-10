@@ -75,8 +75,12 @@ download "${BASE}/classification-heads/timbre/timbre-discogs-effnet-1.pb"
 download "${BASE}/classification-heads/timbre/timbre-discogs-effnet-1.json"
 download "${BASE}/classification-heads/approachability/approachability_2c-discogs-effnet-1.pb"
 download "${BASE}/classification-heads/approachability/approachability_2c-discogs-effnet-1.json"
+download "${BASE}/classification-heads/approachability/approachability_3c-discogs-effnet-1.pb"
+download "${BASE}/classification-heads/approachability/approachability_3c-discogs-effnet-1.json"
 download "${BASE}/classification-heads/engagement/engagement_2c-discogs-effnet-1.pb"
 download "${BASE}/classification-heads/engagement/engagement_2c-discogs-effnet-1.json"
+download "${BASE}/classification-heads/engagement/engagement_3c-discogs-effnet-1.pb"
+download "${BASE}/classification-heads/engagement/engagement_3c-discogs-effnet-1.json"
 
 # ── Instrument ───────────────────────────────────────────────────────────────
 echo ""
@@ -91,6 +95,11 @@ download "${BASE}/classification-heads/mtg_jamendo_top50tags/mtg_jamendo_top50ta
 download "${BASE}/classification-heads/mtg_jamendo_top50tags/mtg_jamendo_top50tags-discogs-effnet-1.json"
 download "${BASE}/classification-heads/mtt/mtt-discogs-effnet-1.pb"
 download "${BASE}/classification-heads/mtt/mtt-discogs-effnet-1.json"
+
+# ── Tempo (TempoCNN) ────────────────────────────────────────────────────────
+echo ""
+echo "📦 Tempo model (TempoCNN)..."
+download "${BASE}/tempo/tempocnn/deepsquare-k16-3.pb"
 
 echo ""
 echo "✅ Download complete!"

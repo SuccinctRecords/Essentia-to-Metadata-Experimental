@@ -14,12 +14,12 @@ import platform
 import urllib.request
 import urllib.error
 import numpy as np
-from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs, TensorflowPredict2D
+from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs, TensorflowPredict2D, TempoCNN as EssentiaTempoCNN
 import essentia
 essentia.log.warningActive = False
 import mutagen
 from mutagen.flac import FLAC
-from mutagen.id3 import ID3, TCON, COMM, TXXX
+from mutagen.id3 import ID3, TCON, TBPM, COMM, TXXX
 from mutagen.oggvorbis import OggVorbis
 from mutagen.oggopus import OggOpus
 from mutagen.mp4 import MP4
@@ -272,7 +272,7 @@ MODEL_REGISTRY = {
         'multi_label': False,
     },
     'approachability': {
-        'display_name': 'Approachability',
+        'display_name': 'Approachability (2-class)',
         'category': 'Context',
         'tag_field': 'APPROACHABILITY',
         'model_file': 'approachability_2c-discogs-effnet-1.pb',
@@ -285,13 +285,39 @@ MODEL_REGISTRY = {
         'multi_label': False,
     },
     'engagement': {
-        'display_name': 'Engagement',
+        'display_name': 'Engagement (2-class)',
         'category': 'Context',
         'tag_field': 'ENGAGEMENT',
         'model_file': 'engagement_2c-discogs-effnet-1.pb',
         'metadata_file': 'engagement_2c-discogs-effnet-1.json',
         'pb_url': f'{_BASE}/engagement/engagement_2c-discogs-effnet-1.pb',
         'json_url': f'{_BASE}/engagement/engagement_2c-discogs-effnet-1.json',
+        'input_layer': None,
+        'output_layer': 'model/Softmax',
+        'activation': 'softmax',
+        'multi_label': False,
+    },
+    'approachability_3c': {
+        'display_name': 'Approachability (3-class)',
+        'category': 'Context',
+        'tag_field': 'APPROACHABILITY_3C',
+        'model_file': 'approachability_3c-discogs-effnet-1.pb',
+        'metadata_file': 'approachability_3c-discogs-effnet-1.json',
+        'pb_url': f'{_BASE}/approachability/approachability_3c-discogs-effnet-1.pb',
+        'json_url': f'{_BASE}/approachability/approachability_3c-discogs-effnet-1.json',
+        'input_layer': None,
+        'output_layer': 'model/Softmax',
+        'activation': 'softmax',
+        'multi_label': False,
+    },
+    'engagement_3c': {
+        'display_name': 'Engagement (3-class)',
+        'category': 'Context',
+        'tag_field': 'ENGAGEMENT_3C',
+        'model_file': 'engagement_3c-discogs-effnet-1.pb',
+        'metadata_file': 'engagement_3c-discogs-effnet-1.json',
+        'pb_url': f'{_BASE}/engagement/engagement_3c-discogs-effnet-1.pb',
+        'json_url': f'{_BASE}/engagement/engagement_3c-discogs-effnet-1.json',
         'input_layer': None,
         'output_layer': 'model/Softmax',
         'activation': 'softmax',
@@ -345,6 +371,21 @@ MODEL_REGISTRY = {
 # Ordered list of categories for display
 MODEL_CATEGORIES = ['Genre', 'Mood', 'Context', 'Instrument', 'Auto-tag']
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPOCNN — BPM detection (separate architecture, not a classifier head)
+# Uses its own algorithm (11025Hz sample rate, no embedding needed).
+# Best-performing model: deepsquare-k16 (256 BPM classes, 30-286 BPM)
+# ─────────────────────────────────────────────────────────────────────────────
+TEMPOCNN_MODEL = {
+    'display_name': 'TempoCNN (BPM)',
+    'model_file': 'deepsquare-k16-3.pb',
+    'metadata_file': None,
+    'pb_url': 'https://essentia.upf.edu/models/tempo/tempocnn/deepsquare-k16-3.pb',
+    'json_url': None,
+    'tag_field': 'BPM',
+    'sample_rate': 11025,
+}
+
 
 def format_genre_tag(raw_genre, style='parent_child'):
     """Format genre tags for readability (handles '---' separator)."""
@@ -392,6 +433,11 @@ def is_embedding_downloaded():
     return os.path.isfile(os.path.join(MODEL_DIR, EMBEDDING_MODEL_FILE))
 
 
+def is_tempocnn_downloaded():
+    """Check if the TempoCNN model is present."""
+    return os.path.isfile(os.path.join(MODEL_DIR, TEMPOCNN_MODEL['model_file']))
+
+
 def _download_file(url, dest_path):
     """Download a file with progress indication."""
     filename = os.path.basename(dest_path)
@@ -417,22 +463,30 @@ def download_embedding():
 
 
 def download_models(model_ids):
-    """Download specified models. Returns list of successfully downloaded IDs."""
+    """Download specified models. Returns list of successfully downloaded IDs.
+    
+    Accepts MODEL_REGISTRY IDs and the special ID 'tempocnn'.
+    """
     os.makedirs(MODEL_DIR, exist_ok=True)
-    # Always ensure embedding is present
-    download_embedding()
+    # Always ensure embedding is present (needed for classifier heads)
+    if any(mid != 'tempocnn' for mid in model_ids):
+        download_embedding()
     
     downloaded = []
     for model_id in model_ids:
-        info = MODEL_REGISTRY[model_id]
+        if model_id == 'tempocnn':
+            info = TEMPOCNN_MODEL
+        else:
+            info = MODEL_REGISTRY[model_id]
         pb_path = os.path.join(MODEL_DIR, info['model_file'])
-        json_path = os.path.join(MODEL_DIR, info['metadata_file'])
         
         try:
             if not os.path.isfile(pb_path):
                 _download_file(info['pb_url'], pb_path)
-            if not os.path.isfile(json_path):
-                _download_file(info['json_url'], json_path)
+            if info.get('metadata_file') and info.get('json_url'):
+                json_path = os.path.join(MODEL_DIR, info['metadata_file'])
+                if not os.path.isfile(json_path):
+                    _download_file(info['json_url'], json_path)
             downloaded.append(model_id)
         except Exception as e:
             print(f"   ⚠️  Failed to download {info['display_name']}: {e}")
@@ -444,6 +498,7 @@ def show_model_status():
     """Display which models are downloaded and which are not."""
     downloaded = get_downloaded_models()
     has_embedding = is_embedding_downloaded()
+    has_tempocnn = is_tempocnn_downloaded()
     
     print("\n" + "=" * 70)
     print("📦 MODEL STATUS")
@@ -461,7 +516,16 @@ def show_model_status():
             print(f"     {status} {info['display_name']}")
         print()
     
-    print(f"   Total: {len(downloaded)}/{len(MODEL_REGISTRY)} models downloaded")
+    # TempoCNN (separate from classifier heads)
+    print(f"   Tempo:")
+    tcnn_status = '✅' if has_tempocnn else '❌'
+    print(f"     {tcnn_status} {TEMPOCNN_MODEL['display_name']}")
+    print()
+    
+    total_classifier = len(downloaded)
+    total_available = len(MODEL_REGISTRY)
+    print(f"   Total: {total_classifier}/{total_available} classifier models downloaded", end="")
+    print(f" + TempoCNN {'✅' if has_tempocnn else '❌'}")
     return downloaded
 
 
@@ -527,6 +591,11 @@ Other Settings:
         log_entry = f"\nFILE: {relative_path}\n{'-' * 80}\n"
         
         for model_id, model_results in results.items():
+            if model_id == 'tempocnn':
+                bpm = model_results.get('bpm', 0)
+                log_entry += f"\n  [TempoCNN (BPM)] → BPM\n"
+                log_entry += f"    BPM: {bpm:.1f}\n"
+                continue
             info = MODEL_REGISTRY[model_id]
             log_entry += f"\n  [{info['display_name']}] → {info['tag_field']}\n"
             if info['multi_label']:
@@ -600,12 +669,14 @@ class Config:
         self.genre_format = 'parent_child'
         self.default_library_path = None
         self.selected_models = []  # list of model IDs to run
+        self.enable_bpm = True     # whether to run TempoCNN for BPM
 
 
 class EssentiaAnalyzer:
     """Analyze audio files with selected Essentia models.
     
     All classifiers share a single embedding computed once per file.
+    TempoCNN runs separately with its own audio loader (11025Hz).
     """
     
     def __init__(self, config, logger, selected_models):
@@ -647,7 +718,18 @@ class EssentiaAnalyzer:
             except Exception as e:
                 logger.log(f"   ⚠️  Could not load {info['display_name']}: {e}")
         
-        logger.log(f"   ✅ {len(self.classifiers)} model(s) loaded successfully!\n")
+        # Load TempoCNN if enabled and downloaded
+        self.tempocnn = None
+        if config.enable_bpm and is_tempocnn_downloaded():
+            try:
+                tcnn_path = os.path.join(MODEL_DIR, TEMPOCNN_MODEL['model_file'])
+                self.tempocnn = EssentiaTempoCNN(graphFilename=tcnn_path)
+                logger.log(f"   ✅ Loaded {TEMPOCNN_MODEL['display_name']}")
+            except Exception as e:
+                logger.log(f"   ⚠️  Could not load TempoCNN: {e}")
+        
+        model_count = len(self.classifiers) + (1 if self.tempocnn else 0)
+        logger.log(f"   ✅ {model_count} model(s) loaded successfully!\n")
     
     def analyze_file(self, filepath):
         """Analyze a single audio file with all selected models.
@@ -660,6 +742,9 @@ class EssentiaAnalyzer:
             'winner' – {'label', 'confidence'} for winning class
             'all' – list of {'label', 'confidence'} for all classes
             'formatted_winner' – formatted winner label string
+          For 'tempocnn':
+            'bpm' – float BPM value
+            'formatted_bpm' – rounded string
         """
         try:
             audio = MonoLoader(
@@ -687,6 +772,23 @@ class EssentiaAnalyzer:
                     results[model_id] = self._process_softmax(
                         model_id, activations, labels, info
                     )
+            
+            # TempoCNN — uses separate audio at 11025Hz
+            if self.tempocnn:
+                try:
+                    audio_tempo = MonoLoader(
+                        filename=str(filepath),
+                        sampleRate=TEMPOCNN_MODEL['sample_rate'],
+                        resampleQuality=4
+                    )()
+                    global_tempo, local_tempo, local_tempo_probs = self.tempocnn(audio_tempo)
+                    bpm = float(global_tempo)
+                    results['tempocnn'] = {
+                        'bpm': bpm,
+                        'formatted_bpm': str(round(bpm)),
+                    }
+                except Exception as e:
+                    self.logger.log(f"     ⚠️  TempoCNN error: {e}")
             
             return results
             
@@ -812,6 +914,10 @@ class TagWriter:
         """Show what tags would be written."""
         parts = []
         for model_id, model_results in results.items():
+            if model_id == 'tempocnn':
+                if model_results.get('formatted_bpm'):
+                    parts.append(f"BPM: {model_results['formatted_bpm']}")
+                continue
             info = MODEL_REGISTRY[model_id]
             if info['multi_label']:
                 if model_results.get('formatted_tags'):
@@ -831,6 +937,10 @@ class TagWriter:
         confidence_tags = {}
         
         for model_id, model_results in results.items():
+            # TempoCNN results are handled separately by format-specific writers
+            if model_id == 'tempocnn':
+                continue
+            
             info = MODEL_REGISTRY[model_id]
             tag_field = info['tag_field']
             
@@ -849,6 +959,12 @@ class TagWriter:
                         confidence_tags[f"ESSENTIA_{tag_field}"] = f"Essentia: {', '.join(details)}"
         
         return tags, confidence_tags
+    
+    def _get_bpm_value(self, results):
+        """Extract BPM value string from results if present."""
+        if 'tempocnn' in results:
+            return results['tempocnn'].get('formatted_bpm')
+        return None
     
     # ── Format-specific writers ──────────────────────────────────────────
     
@@ -914,6 +1030,15 @@ class TagWriter:
             else:
                 self.logger.log(f"     ⏭️  Skipping {key} (already exists)")
         
+        # BPM tag
+        bpm = self._get_bpm_value(results)
+        if bpm:
+            if self.config.overwrite_existing or 'BPM' not in audio:
+                audio['BPM'] = bpm
+                tags_written.append(f"BPM={bpm}")
+            else:
+                self.logger.log("     ⏭️  Skipping BPM (already exists)")
+        
         for key, value in confidence_tags.items():
             audio[key] = value
             tags_written.append(key)
@@ -923,7 +1048,8 @@ class TagWriter:
     def _write_id3_tags(self, tags, results):
         """Shared ID3v2 writer for MP3, AIFF, WAV, DSF.
         
-        GENRE goes to TCON frame.  Everything else goes to TXXX frames.
+        GENRE goes to TCON frame.  BPM goes to TBPM frame.
+        Everything else goes to TXXX frames.
         Confidence info goes to COMM frames.
         """
         tag_values, confidence_tags = self._build_tag_values(results)
@@ -948,6 +1074,17 @@ class TagWriter:
                     tags_written.append(f"TXXX:{key}={value}")
                 else:
                     self.logger.log(f"     ⏭️  Skipping {key} (already exists)")
+        
+        # BPM tag (TBPM frame)
+        bpm = self._get_bpm_value(results)
+        if bpm:
+            has_existing = bool(tags.getall('TBPM'))
+            if self.config.overwrite_existing or not has_existing:
+                tags.delall('TBPM')
+                tags.add(TBPM(encoding=3, text=bpm))
+                tags_written.append(f"TBPM={bpm}")
+            else:
+                self.logger.log("     ⏭️  Skipping BPM (already has TBPM)")
         
         for key, value in confidence_tags.items():
             desc = key
@@ -992,6 +1129,16 @@ class TagWriter:
             ]
             tags_written.append(key)
         
+        # BPM tag (tmpo atom — integer tempo)
+        bpm = self._get_bpm_value(results)
+        if bpm:
+            has_existing = 'tmpo' in audio if audio.tags else False
+            if self.config.overwrite_existing or not has_existing:
+                audio['tmpo'] = [int(round(float(bpm)))]
+                tags_written.append(f"tmpo={bpm}")
+            else:
+                self.logger.log("     ⏭️  Skipping BPM (already has tmpo)")
+        
         if tags_written:
             audio.save()
             self.logger.log(f"     ✅ Written tags: {', '.join(tags_written)}", console=False)
@@ -1020,6 +1167,16 @@ class TagWriter:
         for key, value in confidence_tags.items():
             audio[key] = value
             tags_written.append(key)
+        
+        # BPM tag (WM/BeatsPerMinute)
+        bpm = self._get_bpm_value(results)
+        if bpm:
+            has_existing = 'WM/BeatsPerMinute' in audio if audio.tags else False
+            if self.config.overwrite_existing or not has_existing:
+                audio['WM/BeatsPerMinute'] = bpm
+                tags_written.append(f"WM/BeatsPerMinute={bpm}")
+            else:
+                self.logger.log("     ⏭️  Skipping BPM (already exists)")
         
         if tags_written:
             audio.save()
@@ -1053,6 +1210,16 @@ class TagWriter:
         for key, value in confidence_tags.items():
             audio.tags[key] = value
             tags_written.append(key)
+        
+        # BPM tag
+        bpm = self._get_bpm_value(results)
+        if bpm:
+            has_existing = 'BPM' in audio.tags
+            if self.config.overwrite_existing or not has_existing:
+                audio.tags['BPM'] = bpm
+                tags_written.append(f"BPM={bpm}")
+            else:
+                self.logger.log("     ⏭️  Skipping BPM (already exists)")
         
         if tags_written:
             audio.save()
@@ -1091,6 +1258,10 @@ def scan_library(root_path, analyzer, tag_writer, config, logger):
         if results:
             # Print results to console
             for model_id, model_results in results.items():
+                if model_id == 'tempocnn':
+                    if model_results.get('formatted_bpm'):
+                        logger.log(f"     🥁 BPM: {model_results['formatted_bpm']}")
+                    continue
                 info = MODEL_REGISTRY[model_id]
                 if info['multi_label']:
                     if model_results.get('formatted_tags'):
@@ -1329,34 +1500,44 @@ def prompt_download_models():
     downloaded = show_model_status()
     
     not_downloaded = [mid for mid in MODEL_REGISTRY if mid not in downloaded]
+    # Check TempoCNN separately
+    tempocnn_needs_download = not is_tempocnn_downloaded()
     
-    if not not_downloaded:
+    if not not_downloaded and not tempocnn_needs_download:
         print("   All models are already downloaded!\n")
         return downloaded
     
-    print(f"\n   {len(not_downloaded)} model(s) available to download.")
+    total_avail = len(not_downloaded) + (1 if tempocnn_needs_download else 0)
+    print(f"\n   {total_avail} model(s) available to download.")
     choice = input("   Download additional models? [y/N]: ").strip().lower()
     if choice not in ('y', 'yes'):
         return downloaded
     
+    # Build list of downloadable items
+    download_items = []  # (id, display_text)
+    for mid in not_downloaded:
+        info = MODEL_REGISTRY[mid]
+        download_items.append((mid, f"[{info['category']}] {info['display_name']}"))
+    if tempocnn_needs_download:
+        download_items.append(('tempocnn', f"[Tempo] {TEMPOCNN_MODEL['display_name']}"))
+    
     # Multi-select which models to download
     print("\n   Select models to download (enter numbers separated by commas, or 'all'):")
-    for i, mid in enumerate(not_downloaded, 1):
-        info = MODEL_REGISTRY[mid]
-        print(f"     {i:2d}. [{info['category']}] {info['display_name']}")
+    for i, (mid, display) in enumerate(download_items, 1):
+        print(f"     {i:2d}. {display}")
     
     selection = input("\n   Models to download [all]: ").strip().lower()
     
     if selection in ('', 'all'):
-        to_download = not_downloaded
+        to_download = [mid for mid, _ in download_items]
     else:
         to_download = []
         for part in selection.split(','):
             part = part.strip()
             try:
                 idx = int(part) - 1
-                if 0 <= idx < len(not_downloaded):
-                    to_download.append(not_downloaded[idx])
+                if 0 <= idx < len(download_items):
+                    to_download.append(download_items[idx][0])
             except ValueError:
                 pass
     
@@ -1366,11 +1547,11 @@ def prompt_download_models():
     
     print(f"\n   Downloading {len(to_download)} model(s)...")
     newly_downloaded = download_models(to_download)
-    downloaded.update(newly_downloaded)
+    downloaded.update(mid for mid in newly_downloaded if mid != 'tempocnn')
     
     print(f"   ✅ {len(newly_downloaded)} model(s) downloaded successfully.")
     if newly_downloaded:
-        print(f"   Total models available: {len(downloaded)}/{len(MODEL_REGISTRY)}")
+        print(f"   Total models available: {len(downloaded)}/{len(MODEL_REGISTRY)} classifiers + TempoCNN {'✅' if is_tempocnn_downloaded() else '❌'}")
     
     return downloaded
 
@@ -1774,6 +1955,13 @@ def configure_settings(selected_models):
     print("   What to do if files already have existing tags")
     config.overwrite_existing = get_yes_no("Overwrite existing tags?", default=False)
     
+    # BPM detection (only if TempoCNN is downloaded)
+    if is_tempocnn_downloaded():
+        print("\n" + "─" * 70)
+        print("🥁 BPM DETECTION (TempoCNN)")
+        print("   Detect BPM using TempoCNN deep learning model")
+        config.enable_bpm = get_yes_no("Enable BPM detection?", default=True)
+
     # Verbose output
     print("\n" + "─" * 70)
     print("📢 VERBOSE OUTPUT")
@@ -1800,6 +1988,11 @@ def display_config_summary(config, music_path, selected_models):
     for mid in selected_models:
         info = MODEL_REGISTRY[mid]
         print(f"   • {info['display_name']} → {info['tag_field']}")
+    
+    if config.enable_bpm and is_tempocnn_downloaded():
+        print(f"   • 🥁 TempoCNN BPM Detection → BPM")
+    elif config.enable_bpm:
+        print(f"   • 🥁 TempoCNN BPM Detection → ❌ (model not downloaded)")
     
     if 'genre_discogs400' in selected_models:
         print(f"\n🎸 Genre Settings:")
@@ -1939,6 +2132,10 @@ Genre format styles:
         '--library', type=str, default=None, metavar='DIR',
         help='Default music library path (saved for future runs)'
     )
+    parser.add_argument(
+        '--no-bpm', action='store_true',
+        help='Disable BPM detection (TempoCNN)'
+    )
     
     return parser.parse_args()
 
@@ -1955,6 +2152,7 @@ def config_from_args(args, selected_models):
     config.verbose = not args.quiet
     config.genre_format = args.genre_format
     config.selected_models = selected_models
+    config.enable_bpm = not args.no_bpm
     
     if args.library:
         lib_path = os.path.expanduser(args.library)
@@ -2021,6 +2219,10 @@ def process_single_file(filepath, analyzer, tag_writer, config, logger):
     
     if results:
         for model_id, model_results in results.items():
+            if model_id == 'tempocnn':
+                if model_results.get('formatted_bpm'):
+                    logger.log(f"   🥁 BPM: {model_results['formatted_bpm']}")
+                continue
             info = MODEL_REGISTRY[model_id]
             if info['multi_label']:
                 if model_results.get('formatted_tags'):
@@ -2058,19 +2260,24 @@ def main():
                 for mid, info in models:
                     status = '✅' if mid in downloaded else '  '
                     print(f"    {status} {mid:30s}  {info['display_name']:30s}  → {info['tag_field']}")
-        print(f"\n  ✅ = downloaded ({len(downloaded)}/{len(MODEL_REGISTRY)})")
+        # TempoCNN
+        tcnn_status = '✅' if is_tempocnn_downloaded() else '  '
+        print(f"\n  Tempo:")
+        print(f"    {tcnn_status} {'tempocnn':30s}  {TEMPOCNN_MODEL['display_name']:30s}  → {TEMPOCNN_MODEL['tag_field']}")
+        print(f"\n  ✅ = downloaded ({len(downloaded)}/{len(MODEL_REGISTRY)} classifiers + TempoCNN {'✅' if is_tempocnn_downloaded() else '❌'})")
         sys.exit(0)
     
     # Handle --download
     if args.download is not None:
         if len(args.download) == 0:
-            # Download all
-            to_download = list(MODEL_REGISTRY.keys())
+            # Download all (classifiers + tempocnn)
+            to_download = list(MODEL_REGISTRY.keys()) + ['tempocnn']
         else:
             to_download = []
             for mid in args.download:
-                if mid not in MODEL_REGISTRY:
+                if mid != 'tempocnn' and mid not in MODEL_REGISTRY:
                     print(f"❌ Unknown model ID: {mid}")
+                    print(f"   Available: {', '.join(list(MODEL_REGISTRY.keys()) + ['tempocnn'])}")
                     sys.exit(1)
                 to_download.append(mid)
         
